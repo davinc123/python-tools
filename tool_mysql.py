@@ -257,6 +257,22 @@ def make_update_sql(table, data, condition):
     sql = sql.format(table=table, key_values=key_values, condition=condition)
     return sql
 
+def auto_retry(func):
+    def wapper(*args, **kwargs):
+        for i in range(3):
+            try:
+                return func(*args, **kwargs)
+            except (err.InterfaceError, err.OperationalError) as e:
+                log.error(
+                    """
+                    error:%s
+                    sql:  %s
+                    """
+                    % (e, kwargs.get("sql") or args[1])
+                )
+
+    return wapper
+
 
 class MysqlDB:
     def __init__(
@@ -313,11 +329,13 @@ class MysqlDB:
         return conn, cursor
 
     def close_connection(self, conn, cursor):
-        if conn:
-            conn.close()
         if cursor:
             cursor.close()
+        if conn:
+            conn.close()
 
+
+    @auto_retry
     def find(self, sql, params=None, limit=0, to_json=False, conver_col=True):
         """
         查询
@@ -356,12 +374,13 @@ class MysqlDB:
                         处理失败：
                         exception: {}
                         """.format(
-                                 e
+                                e
                             )
                         )
                         return col
                 else:
                     return col
+
             if limit == 1:
                 if conver_col:
                     result = [convert(col) for col in result]
