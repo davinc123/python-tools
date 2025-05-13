@@ -6,16 +6,29 @@ import logging
 import datetime
 
 from pprint import pformat
-from dotenv import load_dotenv
 from pymysql import err, cursors
 from typing import List, Dict, Any
 from dbutils.pooled_db import PooledDB
 
 
-load_dotenv(dotenv_path=f".env")
+def setup_logging(level=logging.WARNING, to_file=None):
+    logger = logging.getLogger()
+    logger.setLevel(level)
 
-logging.basicConfig(level=logging.WARNING)
-log = logging.getLogger(__name__)
+    logger.handlers = []
+
+    if to_file:
+        handler = logging.FileHandler(to_file)
+    else:
+        handler = logging.StreamHandler()
+
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+
+    logger.addHandler(handler)
+
+setup_logging(logging.ERROR)
+
 
 _regexs = {}
 def get_info(html, regexs, allow_repeat=True, fetch_one=False, split=None):
@@ -64,7 +77,7 @@ def get_json(json_str):
             return json.loads(json_str) if json_str else {}
 
         except Exception as e2:
-            log.error(
+            logging.error(
                 """
                 e1: %s
                 format json_str: %s
@@ -91,7 +104,7 @@ def dumps_json(data, indent=4, sort_keys=False):
         )
 
     except Exception as e:
-        log.error(
+        logging.error(
             """
             e: %s
             data: %s
@@ -175,7 +188,7 @@ def make_batch_sql(
     :param datas: 表数据 [{...}]
     :param auto_update: 使用的是replace into， 为完全覆盖已存在的数据
     :param update_columns: 需要更新的列 默认全部，当指定值时，auto_update设置无效，当duplicate key冲突时更新指定的列
-    :param update_columns_value: 需要更新的列的值 默认为datas里边对应的值, 如果值为字符串类型 需要主动加单引号， 如 update_columns_value=("'test'",)
+    :param update_columns_value: 需要更新的列的值 默认为datas里边对应的值, 如果值为字符串类型 需要主动加单引号， 如 update_columns_value=("'test'",)或"VALUES(test)"
     :return:
     """
     if not datas:
@@ -263,7 +276,7 @@ def auto_retry(func):
             try:
                 return func(*args, **kwargs)
             except (err.InterfaceError, err.OperationalError) as e:
-                log.error(
+                logging.error(
                     """
                     error:%s
                     sql:  %s
@@ -306,7 +319,7 @@ class MysqlDB:
             )
 
         except Exception as e:
-            log.error(
+            logging.error(
                 """
             连接失败：
             ip: {}
@@ -320,7 +333,7 @@ class MysqlDB:
                 )
             )
         else:
-            log.debug("连接到mysql数据库 %s : %s" % (ip, db))
+            logging.debug("连接到mysql数据库 %s : %s" % (ip, db))
 
     def get_connection(self):
         conn = self.connect_pool.connection(shareable=False)
@@ -333,7 +346,6 @@ class MysqlDB:
             cursor.close()
         if conn:
             conn.close()
-
 
     @auto_retry
     def find(self, sql, params=None, limit=0, to_json=False, conver_col=True):
@@ -369,7 +381,7 @@ class MysqlDB:
                     try:
                         return json.loads(col)
                     except Exception as e:
-                        log.error(
+                        logging.error(
                             """
                         处理失败：
                         exception: {}
@@ -411,7 +423,7 @@ class MysqlDB:
             conn.commit()
 
         except Exception as e:
-            log.error(
+            logging.error(
                 """
                 error:%s
                 sql:  %s
@@ -452,7 +464,7 @@ class MysqlDB:
             conn.commit()
 
         except Exception as e:
-            log.error(
+            logging.error(
                 """
                 error:%s
                 sql:  %s
@@ -484,7 +496,7 @@ class MysqlDB:
             affect_count = cursor.execute(sql)
             conn.commit()
         except Exception as e:
-            log.error(
+            logging.error(
                 """
                 error:%s
                 sql:  %s
@@ -520,11 +532,11 @@ class MysqlDB:
             affect_count = cursor.execute(sql)
             conn.commit()
         except Exception as e:
-            log.error(
+            logging.error(
                 """
                 error:%s
                 sql:  %s
-            """
+                """
                 % (e, sql)
             )
         finally:
@@ -532,28 +544,56 @@ class MysqlDB:
 
         return affect_count
 
-    def execute(self, sql) -> Any | None:
+    def execute(self, sql: str, params: tuple | list = None) -> int | None:
         """
+        执行参数化 SQL 语句
 
-        :param sql:
-        :return: 影响行数
+        :param sql: SQL 语句，使用占位符（如 %s）
+        :param params: 参数元组或列表
+        :return: 影响的行数 更新已有数据(2)
         """
         affect_count = None
         conn, cursor = None, None
         try:
             conn, cursor = self.get_connection()
-            affect_count = cursor.execute(sql)
+            affect_count = cursor.execute(sql, params or ())
             conn.commit()
         except Exception as e:
-            log.error(
-                """
-                error:%s
-                sql:  %s
-            """
-                % (e, sql)
+            logging.error(
+                f"""
+                error:   %s
+                sql:     %s
+                params:  %s
+                """ % (e, sql, params)
             )
         finally:
             self.close_connection(conn, cursor)
 
         return affect_count
 
+    def executemany(self, sql: str, params: list[tuple]) -> int | None:
+        """
+        执行批量参数化 SQL 语句（适用于多条插入或更新）
+
+        :param sql: SQL 语句，使用占位符（如 %s）
+        :param params: 参数列表，每个元素是一个元组
+        :return: 影响的总行数
+        """
+        affect_count = None
+        conn, cursor = None, None
+        try:
+            conn, cursor = self.get_connection()
+            affect_count = cursor.executemany(sql, params)
+            conn.commit()
+        except Exception as e:
+            logging.error(
+                f"""
+                error:   %s
+                sql:     %s
+                params:  %s
+                """ % (e, sql, params)
+            )
+        finally:
+            self.close_connection(conn, cursor)
+
+        return affect_count
